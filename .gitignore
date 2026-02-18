@@ -1,0 +1,11 @@
+__pycache__/
+*.py[cod]
+*.pyc
+.playwright/
+output/
+*.json
+!requirements.txt
+venv/
+.env
+.DS_Store
+*.log

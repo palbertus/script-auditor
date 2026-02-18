@@ -1,0 +1,380 @@
+#!/usr/bin/env python3
+"""
+audit_scripts.py — Detect all JavaScript scripts loaded on a webpage,
+including those injected by Google Tag Manager.
+
+Usage:
+  python audit_scripts.py <url>
+  python audit_scripts.py --file urls.txt
+  python audit_scripts.py <url> --output my-audit.json --verbose
+  python audit_scripts.py <url> --no-headless --timeout 45
+"""
+
+import argparse
+import json
+import os
+import sys
+from collections import Counter
+from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import urlparse
+
+from playwright.sync_api import Browser, Page, sync_playwright
+
+from vendor_map import infer_vendor_from_inline, lookup_vendor
+
+# URLs to ignore (GTM internal / debug endpoints)
+_FILTERED_URL_FRAGMENTS = [
+    "googletagmanager.com/gtm/init",
+    "googletagmanager.com/gtm/preview",
+    "googletagmanager.com/debug",
+]
+
+
+# ---------------------------------------------------------------------------
+# Pure helpers
+# ---------------------------------------------------------------------------
+
+def infer_name(url: str) -> str:
+    """Extract a human-readable script name from a URL."""
+    if url == "inline":
+        return "inline"
+    try:
+        path = urlparse(url).path.rstrip("/")
+        filename = path.split("/")[-1] if "/" in path else path
+        # Strip query params that crept into the filename
+        filename = filename.split("?")[0]
+        if filename:
+            return filename
+        # Fallback: use hostname
+        return urlparse(url).hostname or url
+    except Exception:
+        return url
+
+
+def is_gtm_request(url: str) -> bool:
+    """Return True if this URL is the GTM container loader."""
+    lower = url.lower()
+    return (
+        "googletagmanager.com/gtm.js" in lower
+        or "googletagmanager.com/gtag/js" in lower
+    )
+
+
+def is_filtered_url(url: str) -> bool:
+    """Return True if this URL should be ignored (GTM internal endpoints)."""
+    lower = url.lower()
+    return any(fragment in lower for fragment in _FILTERED_URL_FRAGMENTS)
+
+
+def build_script_record(
+    url: str, name: str, vendor: str, via_gtm: bool, script_type: str
+) -> dict:
+    return {
+        "url": url,
+        "name": name,
+        "vendor": vendor,
+        "via_gtm": via_gtm,
+        "type": script_type,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Page inspection
+# ---------------------------------------------------------------------------
+
+def extract_inline_scripts(page: Page) -> list:
+    """Return records for all non-empty inline <script> tags."""
+    try:
+        contents = page.eval_on_selector_all(
+            "script:not([src])",
+            "els => els.map(el => el.textContent || '')"
+        )
+    except Exception:
+        return []
+
+    records = []
+    for content in contents:
+        content = content.strip()
+        if not content:
+            continue
+        vendor = infer_vendor_from_inline(content)
+        records.append(build_script_record("inline", "inline", vendor, False, "inline"))
+    return records
+
+
+def get_dom_script_urls(page: Page) -> set:
+    """Return the set of absolute src URLs from <script src> elements in the DOM."""
+    try:
+        urls = page.eval_on_selector_all(
+            "script[src]",
+            "els => els.map(el => el.src)"
+        )
+        return set(u for u in urls if u)
+    except Exception:
+        return set()
+
+
+# ---------------------------------------------------------------------------
+# Core audit
+# ---------------------------------------------------------------------------
+
+def audit_url(url: str, browser: Browser, timeout_ms: int) -> dict:
+    """Audit a single URL and return a result dict."""
+    context = browser.new_context(
+        user_agent=(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/121.0.0.0 Safari/537.36"
+        )
+    )
+    page = context.new_page()
+
+    captured_requests: list = []
+    gtm_detected = False
+
+    def handle_request(request):
+        nonlocal gtm_detected
+        if request.resource_type == "script":
+            req_url = request.url
+            if is_filtered_url(req_url):
+                return
+            captured_requests.append(req_url)
+            if is_gtm_request(req_url):
+                gtm_detected = True
+
+    page.on("request", handle_request)
+
+    try:
+        page.goto(url, wait_until="networkidle", timeout=timeout_ms)
+    except Exception as e:
+        context.close()
+        return {
+            "url": url,
+            "scanned_at": _now_iso(),
+            "gtm_detected": False,
+            "error": str(e),
+            "scripts": [],
+        }
+
+    # Extra buffer for late-firing GTM tags
+    try:
+        page.wait_for_timeout(2000)
+    except Exception:
+        pass
+
+    # Snapshot DOM scripts (present in initial HTML or injected synchronously)
+    dom_script_urls = get_dom_script_urls(page)
+
+    # Inline scripts
+    inline_records = extract_inline_scripts(page)
+
+    # External scripts present in the DOM
+    dom_external_records = []
+    for script_url in dom_script_urls:
+        name = infer_name(script_url)
+        vendor = lookup_vendor(script_url)
+        dom_external_records.append(
+            build_script_record(script_url, name, vendor, False, "external")
+        )
+
+    # Dynamic scripts = network-captured but not in the DOM snapshot
+    dynamic_records = []
+    for script_url in captured_requests:
+        if script_url not in dom_script_urls:
+            name = infer_name(script_url)
+            vendor = lookup_vendor(script_url)
+            dynamic_records.append(
+                build_script_record(script_url, name, vendor, gtm_detected, "external")
+            )
+
+    context.close()
+
+    # Combine and deduplicate by (url, type)
+    all_scripts = inline_records + dom_external_records + dynamic_records
+    seen = set()
+    deduped = []
+    for s in all_scripts:
+        key = (s["url"], s["type"])
+        if key not in seen:
+            seen.add(key)
+            deduped.append(s)
+
+    return {
+        "url": url,
+        "scanned_at": _now_iso(),
+        "gtm_detected": gtm_detected,
+        "error": None,
+        "scripts": deduped,
+    }
+
+
+def _now_iso() -> str:
+    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+# ---------------------------------------------------------------------------
+# Output / display
+# ---------------------------------------------------------------------------
+
+def print_result(result: dict, verbose: bool, index: int = None, total: int = None) -> None:
+    prefix = f"[{index}/{total}] " if index is not None else ""
+    print(f"\n{prefix}Auditing: {result['url']}")
+
+    if result.get("error"):
+        print(f"  ERROR: {result['error']}")
+        return
+
+    scripts = result["scripts"]
+    inline_count = sum(1 for s in scripts if s["type"] == "inline")
+    external_count = sum(1 for s in scripts if s["type"] == "external")
+    via_gtm_count = sum(1 for s in scripts if s["via_gtm"])
+
+    print(f"  Found {len(scripts)} scripts ({inline_count} inline, {external_count} external)")
+    print(f"  GTM detected: {'YES' if result['gtm_detected'] else 'NO'}")
+    if result["gtm_detected"]:
+        print(f"  Scripts injected via GTM: {via_gtm_count}")
+
+    vendor_counts = Counter(s["vendor"] for s in scripts)
+    if vendor_counts:
+        print("  Vendor breakdown:")
+        for vendor, count in vendor_counts.most_common():
+            print(f"    {vendor:<35} {count}")
+
+    if verbose and scripts:
+        print()
+        header = f"  {'URL':<55} {'Name':<20} {'Vendor':<30} {'GTM':<5} {'Type'}"
+        print(header)
+        print("  " + "-" * (len(header) - 2))
+        for s in scripts:
+            short_url = s["url"]
+            if len(short_url) > 53:
+                short_url = short_url[:50] + "..."
+            gtm_flag = "Yes" if s["via_gtm"] else "No"
+            print(
+                f"  {short_url:<55} {s['name']:<20} {s['vendor']:<30} {gtm_flag:<5} {s['type']}"
+            )
+
+
+def save_results(results, output_path: str) -> None:
+    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
+    with open(output_path, "w", encoding="utf-8") as f:
+        json.dump(results, f, indent=2, ensure_ascii=False)
+    print(f"\nResults saved to: {output_path}")
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Detect all JS scripts on a webpage, including GTM-injected ones.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=__doc__,
+    )
+    parser.add_argument(
+        "url",
+        nargs="?",
+        help="Single URL to audit (e.g. https://example.com)",
+    )
+    parser.add_argument(
+        "--file", "-f",
+        metavar="FILE",
+        help="Path to a .txt file with one URL per line",
+    )
+    parser.add_argument(
+        "--output", "-o",
+        metavar="FILE",
+        help="Output JSON file path (default: output/audit_TIMESTAMP.json)",
+    )
+    parser.add_argument(
+        "--timeout", "-t",
+        type=int,
+        default=30,
+        metavar="SECONDS",
+        help="Timeout per URL in seconds (default: 30)",
+    )
+    parser.add_argument(
+        "--no-headless",
+        action="store_true",
+        help="Show the browser window (useful for debugging)",
+    )
+    parser.add_argument(
+        "--verbose", "-v",
+        action="store_true",
+        help="Print a table of all detected scripts per URL",
+    )
+    return parser.parse_args()
+
+
+def load_urls(args: argparse.Namespace) -> list:
+    if args.url and args.file:
+        sys.exit("Error: provide either a URL or --file, not both.")
+    if not args.url and not args.file:
+        sys.exit("Error: provide a URL or --file <path>.")
+
+    if args.url:
+        urls = [args.url.strip()]
+    else:
+        file_path = Path(args.file)
+        if not file_path.exists():
+            sys.exit(f"Error: file not found: {args.file}")
+        lines = file_path.read_text(encoding="utf-8").splitlines()
+        urls = [
+            line.strip()
+            for line in lines
+            if line.strip() and not line.strip().startswith("#")
+        ]
+        if not urls:
+            sys.exit(f"Error: no URLs found in {args.file}")
+
+    validated = []
+    for u in urls:
+        if not u.startswith(("http://", "https://")):
+            print(f"Warning: skipping invalid URL (no http/https): {u}", file=sys.stderr)
+            continue
+        validated.append(u)
+
+    if not validated:
+        sys.exit("Error: no valid URLs to audit.")
+    return validated
+
+
+# ---------------------------------------------------------------------------
+# Orchestrator
+# ---------------------------------------------------------------------------
+
+def run_audit(urls: list, args: argparse.Namespace) -> None:
+    timeout_ms = args.timeout * 1000
+    headless = not args.no_headless
+    total = len(urls)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    output_path = args.output or f"output/audit_{timestamp}.json"
+
+    results = []
+    with sync_playwright() as pw:
+        browser = pw.chromium.launch(headless=headless)
+        try:
+            for i, url in enumerate(urls, start=1):
+                result = audit_url(url, browser, timeout_ms)
+                results.append(result)
+                print_result(result, args.verbose, index=i, total=total)
+        except KeyboardInterrupt:
+            print("\nInterrupted. Saving partial results...")
+        finally:
+            browser.close()
+
+    output_data = results[0] if len(results) == 1 else results
+    save_results(output_data, output_path)
+
+
+def main() -> None:
+    args = parse_args()
+    urls = load_urls(args)
+    run_audit(urls, args)
+
+
+if __name__ == "__main__":
+    main()

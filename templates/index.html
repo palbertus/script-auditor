@@ -1,0 +1,660 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Script Auditor</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg: #0f1117;
+      --surface: #1a1d27;
+      --surface2: #22263a;
+      --border: #2e3250;
+      --accent: #5b7fff;
+      --accent2: #7c4dff;
+      --green: #3dd68c;
+      --orange: #f5a623;
+      --red: #ff5c5c;
+      --text: #e2e4f0;
+      --muted: #7a7f9a;
+      --font: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Menlo', monospace;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      min-height: 100vh;
+    }
+
+    /* ── Layout ── */
+    header {
+      padding: 24px 32px 20px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      align-items: baseline;
+      gap: 12px;
+    }
+
+    header h1 {
+      font-size: 18px;
+      font-weight: 700;
+      letter-spacing: -0.3px;
+      color: #fff;
+    }
+
+    header span {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 32px;
+    }
+
+    /* ── Input card ── */
+    .input-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 28px;
+    }
+
+    .input-row {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+    }
+
+    .url-input {
+      flex: 1;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 14px;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      outline: none;
+      transition: border-color 0.15s;
+    }
+
+    .url-input:focus {
+      border-color: var(--accent);
+    }
+
+    .url-input::placeholder { color: var(--muted); }
+
+    .timeout-select {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px 10px;
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 13px;
+      cursor: pointer;
+      outline: none;
+    }
+
+    .btn-audit {
+      background: var(--accent);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      padding: 10px 22px;
+      font-family: var(--font);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+      white-space: nowrap;
+    }
+
+    .btn-audit:hover { opacity: 0.85; }
+    .btn-audit:disabled { opacity: 0.4; cursor: not-allowed; }
+
+    /* ── Progress ── */
+    #progress {
+      display: none;
+      align-items: center;
+      gap: 12px;
+      margin-top: 16px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .spinner {
+      width: 16px;
+      height: 16px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin 0.8s linear infinite;
+      flex-shrink: 0;
+    }
+
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    .error-msg {
+      display: none;
+      margin-top: 12px;
+      padding: 10px 14px;
+      background: rgba(255,92,92,0.1);
+      border: 1px solid rgba(255,92,92,0.3);
+      border-radius: 6px;
+      color: var(--red);
+      font-size: 12px;
+    }
+
+    /* ── Results ── */
+    #results { display: none; }
+
+    /* Summary bar */
+    .summary {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      margin-bottom: 24px;
+    }
+
+    .stat {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 14px 20px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 120px;
+    }
+
+    .stat-value {
+      font-size: 28px;
+      font-weight: 700;
+      color: #fff;
+      line-height: 1;
+    }
+
+    .stat-label {
+      font-size: 11px;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font-size: 11px;
+      font-weight: 700;
+    }
+
+    .badge-gtm {
+      background: rgba(91,127,255,0.15);
+      color: var(--accent);
+      border: 1px solid rgba(91,127,255,0.3);
+    }
+
+    .badge-no-gtm {
+      background: rgba(122,127,154,0.1);
+      color: var(--muted);
+      border: 1px solid var(--border);
+    }
+
+    /* Vendor breakdown */
+    .section-title {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.8px;
+      color: var(--muted);
+      margin-bottom: 12px;
+    }
+
+    .vendors {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-bottom: 28px;
+    }
+
+    .vendor-chip {
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 6px 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 12px;
+    }
+
+    .vendor-chip .vc-name { color: var(--text); }
+    .vendor-chip .vc-count {
+      background: var(--border);
+      color: var(--muted);
+      border-radius: 3px;
+      padding: 1px 6px;
+      font-size: 11px;
+    }
+
+    /* Scripts table */
+    .table-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 12px;
+    }
+
+    .filter-tabs {
+      display: flex;
+      gap: 4px;
+    }
+
+    .filter-tab {
+      background: transparent;
+      border: 1px solid var(--border);
+      border-radius: 5px;
+      padding: 5px 12px;
+      color: var(--muted);
+      font-family: var(--font);
+      font-size: 11px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+
+    .filter-tab.active, .filter-tab:hover {
+      background: var(--surface2);
+      color: var(--text);
+      border-color: var(--accent);
+    }
+
+    .table-wrap {
+      overflow-x: auto;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+
+    thead tr {
+      background: var(--surface);
+      border-bottom: 1px solid var(--border);
+    }
+
+    th {
+      padding: 10px 14px;
+      text-align: left;
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      color: var(--muted);
+      font-weight: 600;
+      white-space: nowrap;
+    }
+
+    tbody tr {
+      border-bottom: 1px solid var(--border);
+      transition: background 0.1s;
+    }
+
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: var(--surface2); }
+    tbody tr.via-gtm { background: rgba(91,127,255,0.04); }
+    tbody tr.via-gtm:hover { background: rgba(91,127,255,0.09); }
+
+    td {
+      padding: 10px 14px;
+      font-size: 12px;
+      vertical-align: middle;
+    }
+
+    td.url-cell {
+      max-width: 340px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    td.url-cell a {
+      color: var(--muted);
+      text-decoration: none;
+    }
+
+    td.url-cell a:hover { color: var(--accent); }
+
+    .tag {
+      display: inline-block;
+      padding: 2px 7px;
+      border-radius: 4px;
+      font-size: 10px;
+      font-weight: 600;
+    }
+
+    .tag-external { background: rgba(61,214,140,0.1); color: var(--green); }
+    .tag-inline   { background: rgba(245,166,35,0.1);  color: var(--orange); }
+    .tag-gtm      { background: rgba(91,127,255,0.15); color: var(--accent); }
+    .tag-no       { color: var(--muted); }
+
+    .scanned-at {
+      margin-top: 20px;
+      font-size: 11px;
+      color: var(--muted);
+      text-align: right;
+    }
+
+    /* Hidden util */
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>Script Auditor</h1>
+  <span>Detect all JS scripts loaded on a page, including GTM-injected ones</span>
+</header>
+
+<main>
+  <!-- Input -->
+  <div class="input-card">
+    <div class="input-row">
+      <input
+        id="urlInput"
+        class="url-input"
+        type="url"
+        placeholder="https://example.com"
+        autocomplete="off"
+        spellcheck="false"
+      />
+      <select id="timeoutSelect" class="timeout-select" title="Timeout per scan">
+        <option value="20">20s</option>
+        <option value="30" selected>30s</option>
+        <option value="45">45s</option>
+        <option value="60">60s</option>
+        <option value="90">90s</option>
+      </select>
+      <button id="auditBtn" class="btn-audit" onclick="startAudit()">Audit</button>
+    </div>
+
+    <div id="progress">
+      <div class="spinner"></div>
+      <span id="statusMsg">Starting...</span>
+    </div>
+
+    <div id="errorMsg" class="error-msg"></div>
+  </div>
+
+  <!-- Results -->
+  <div id="results">
+    <!-- Summary -->
+    <div class="summary">
+      <div class="stat">
+        <span class="stat-value" id="totalCount">0</span>
+        <span class="stat-label">Total Scripts</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="externalCount">0</span>
+        <span class="stat-label">External</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="inlineCount">0</span>
+        <span class="stat-label">Inline</span>
+      </div>
+      <div class="stat">
+        <span class="stat-value" id="gtmInjectedCount">0</span>
+        <span class="stat-label">Via GTM</span>
+      </div>
+      <div class="stat" id="gtmStat">
+        <span class="stat-label" style="margin-bottom:6px">GTM Status</span>
+        <span id="gtmBadge" class="badge">—</span>
+      </div>
+    </div>
+
+    <!-- Vendor breakdown -->
+    <p class="section-title">Vendors detected</p>
+    <div id="vendorChips" class="vendors"></div>
+
+    <!-- Scripts table -->
+    <div class="table-header">
+      <p class="section-title" style="margin:0">All scripts</p>
+      <div class="filter-tabs">
+        <button class="filter-tab active" onclick="setFilter('all', this)">All</button>
+        <button class="filter-tab" onclick="setFilter('external', this)">External</button>
+        <button class="filter-tab" onclick="setFilter('inline', this)">Inline</button>
+        <button class="filter-tab" onclick="setFilter('gtm', this)">Via GTM</button>
+      </div>
+    </div>
+
+    <div class="table-wrap">
+      <table>
+        <thead>
+          <tr>
+            <th>Name</th>
+            <th>Vendor</th>
+            <th>Type</th>
+            <th>Via GTM</th>
+            <th>URL</th>
+          </tr>
+        </thead>
+        <tbody id="scriptsBody"></tbody>
+      </table>
+    </div>
+
+    <p class="scanned-at" id="scannedAt"></p>
+  </div>
+</main>
+
+<script>
+  let currentFilter = 'all';
+  let allScripts = [];
+  let activeSource = null;
+
+  function startAudit() {
+    const url = document.getElementById('urlInput').value.trim();
+    if (!url) { showError('Please enter a URL.'); return; }
+    if (!url.startsWith('http://') && !url.startsWith('https://')) {
+      showError('URL must start with http:// or https://');
+      return;
+    }
+
+    const timeout = parseInt(document.getElementById('timeoutSelect').value, 10);
+
+    // Reset UI
+    hideError();
+    hideResults();
+    showProgress('Starting audit...');
+    setAuditBtn(false);
+
+    if (activeSource) { activeSource.close(); activeSource = null; }
+
+    fetch('/audit', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url, timeout }),
+    })
+    .then(r => r.json())
+    .then(({ job_id, error }) => {
+      if (error) { showError(error); hideProgress(); setAuditBtn(true); return; }
+      listenToJob(job_id);
+    })
+    .catch(err => {
+      showError('Failed to start audit: ' + err.message);
+      hideProgress();
+      setAuditBtn(true);
+    });
+  }
+
+  function listenToJob(jobId) {
+    const source = new EventSource(`/stream/${jobId}`);
+    activeSource = source;
+
+    source.onmessage = (e) => {
+      const event = JSON.parse(e.data);
+
+      if (event.type === 'status') {
+        setStatus(event.message);
+      } else if (event.type === 'result') {
+        source.close();
+        activeSource = null;
+        hideProgress();
+        setAuditBtn(true);
+        renderResults(event.data);
+      } else if (event.type === 'error') {
+        source.close();
+        activeSource = null;
+        hideProgress();
+        setAuditBtn(true);
+        showError(event.message || 'Unknown error');
+      } else if (event.type === 'done') {
+        source.close();
+        activeSource = null;
+      }
+    };
+
+    source.onerror = () => {
+      source.close();
+      activeSource = null;
+      hideProgress();
+      setAuditBtn(true);
+      showError('Connection lost. Please try again.');
+    };
+  }
+
+  function renderResults(data) {
+    allScripts = data.scripts || [];
+    currentFilter = 'all';
+
+    // Activate "All" tab
+    document.querySelectorAll('.filter-tab').forEach((t, i) => {
+      t.classList.toggle('active', i === 0);
+    });
+
+    const external = allScripts.filter(s => s.type === 'external');
+    const inline   = allScripts.filter(s => s.type === 'inline');
+    const viaGtm   = allScripts.filter(s => s.via_gtm);
+
+    document.getElementById('totalCount').textContent    = allScripts.length;
+    document.getElementById('externalCount').textContent = external.length;
+    document.getElementById('inlineCount').textContent   = inline.length;
+    document.getElementById('gtmInjectedCount').textContent = viaGtm.length;
+
+    const badge = document.getElementById('gtmBadge');
+    if (data.gtm_detected) {
+      badge.textContent = 'GTM Detected';
+      badge.className = 'badge badge-gtm';
+    } else {
+      badge.textContent = 'No GTM';
+      badge.className = 'badge badge-no-gtm';
+    }
+
+    // Vendor chips
+    const vendorCounts = {};
+    allScripts.forEach(s => {
+      vendorCounts[s.vendor] = (vendorCounts[s.vendor] || 0) + 1;
+    });
+    const sorted = Object.entries(vendorCounts).sort((a, b) => b[1] - a[1]);
+    const chipsEl = document.getElementById('vendorChips');
+    chipsEl.innerHTML = sorted.map(([vendor, count]) => `
+      <div class="vendor-chip">
+        <span class="vc-name">${esc(vendor)}</span>
+        <span class="vc-count">${count}</span>
+      </div>
+    `).join('');
+
+    renderTable(allScripts);
+
+    document.getElementById('scannedAt').textContent = 'Scanned at ' + (data.scanned_at || '');
+    document.getElementById('results').style.display = 'block';
+  }
+
+  function renderTable(scripts) {
+    const tbody = document.getElementById('scriptsBody');
+    if (!scripts.length) {
+      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);padding:20px;text-align:center">No scripts found</td></tr>';
+      return;
+    }
+    tbody.innerHTML = scripts.map(s => {
+      const gtmClass = s.via_gtm ? ' via-gtm' : '';
+      const typeTag  = s.type === 'external'
+        ? '<span class="tag tag-external">external</span>'
+        : '<span class="tag tag-inline">inline</span>';
+      const gtmTag   = s.via_gtm
+        ? '<span class="tag tag-gtm">GTM</span>'
+        : '<span class="tag-no">—</span>';
+      const urlCell  = s.url === 'inline'
+        ? '<span style="color:var(--muted)">inline</span>'
+        : `<a href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(s.url)}">${esc(s.url)}</a>`;
+
+      return `<tr class="${gtmClass}">
+        <td>${esc(s.name)}</td>
+        <td>${esc(s.vendor)}</td>
+        <td>${typeTag}</td>
+        <td>${gtmTag}</td>
+        <td class="url-cell">${urlCell}</td>
+      </tr>`;
+    }).join('');
+  }
+
+  function setFilter(filter, btn) {
+    currentFilter = filter;
+    document.querySelectorAll('.filter-tab').forEach(t => t.classList.remove('active'));
+    btn.classList.add('active');
+
+    let filtered;
+    if (filter === 'all')      filtered = allScripts;
+    else if (filter === 'gtm') filtered = allScripts.filter(s => s.via_gtm);
+    else                       filtered = allScripts.filter(s => s.type === filter);
+
+    renderTable(filtered);
+  }
+
+  // ── UI helpers ──
+  function showProgress(msg) {
+    setStatus(msg);
+    document.getElementById('progress').style.display = 'flex';
+  }
+  function hideProgress() {
+    document.getElementById('progress').style.display = 'none';
+  }
+  function setStatus(msg) {
+    document.getElementById('statusMsg').textContent = msg;
+  }
+  function showError(msg) {
+    const el = document.getElementById('errorMsg');
+    el.textContent = msg;
+    el.style.display = 'block';
+  }
+  function hideError() {
+    document.getElementById('errorMsg').style.display = 'none';
+  }
+  function hideResults() {
+    document.getElementById('results').style.display = 'none';
+  }
+  function setAuditBtn(enabled) {
+    document.getElementById('auditBtn').disabled = !enabled;
+  }
+  function esc(str) {
+    return String(str)
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // Allow Enter key to submit
+  document.getElementById('urlInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') startAudit();
+  });
+</script>
+</body>
+</html>

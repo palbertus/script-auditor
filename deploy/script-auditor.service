@@ -1,0 +1,24 @@
+[Unit]
+Description=Script Auditor – JS tag detection web app
+After=network.target
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/opt/script-auditor
+
+# Playwright needs a home dir to store browser binaries
+Environment="HOME=/opt/script-auditor"
+Environment="PLAYWRIGHT_BROWSERS_PATH=/opt/script-auditor/.playwright"
+
+ExecStart=/opt/script-auditor/venv/bin/gunicorn -c gunicorn.conf.py app:app
+
+Restart=on-failure
+RestartSec=5
+
+# Allow Chromium to open enough file descriptors
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
