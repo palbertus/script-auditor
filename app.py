@@ -127,5 +127,5 @@ def stream(job_id: str):
 # ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
-    print("Starting server at http://127.0.0.1:8080")
-    app.run(debug=False, threaded=True, port=8080)
+    print("Starting server at http://127.0.0.1:7070")
+    app.run(debug=False, threaded=True, port=7070)
