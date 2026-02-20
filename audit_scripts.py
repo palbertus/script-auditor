@@ -53,12 +53,21 @@ def infer_name(url: str) -> str:
 
 
 def is_gtm_request(url: str) -> bool:
-    """Return True if this URL is the GTM container loader."""
+    """Return True if this URL is the GTM container loader.
+    Covers both standard and server-side GTM (custom domain proxies).
+    """
     lower = url.lower()
-    return (
-        "googletagmanager.com/gtm.js" in lower
-        or "googletagmanager.com/gtag/js" in lower
-    )
+    # Standard GTM
+    if "googletagmanager.com/gtm.js" in lower:
+        return True
+    if "googletagmanager.com/gtag/js" in lower:
+        return True
+    # Server-side GTM: custom domain serving /gtm.js?id=GTM-XXXX or /gtag/js?id=...
+    if "/gtm.js" in lower and "id=gtm-" in lower:
+        return True
+    if "/gtag/js" in lower and ("id=g-" in lower or "id=gtm-" in lower):
+        return True
+    return False
 
 
 def is_filtered_url(url: str) -> bool:

@@ -166,6 +166,10 @@ _INLINE_FINGERPRINTS = [
 def lookup_vendor(url: str) -> str:
     """Return the vendor name for a script URL, or 'Unknown'."""
     lowered = url.lower()
+    # Server-side GTM: custom domain serving /gtm.js?id=GTM-... or /gtag/js?id=...
+    if ("/gtm.js" in lowered and "id=gtm-" in lowered) or \
+       ("/gtag/js" in lowered and ("id=g-" in lowered or "id=gtm-" in lowered)):
+        return "Google Tag Manager"
     for pattern, vendor in VENDOR_PATTERNS:
         if pattern.lower() in lowered:
             return vendor
