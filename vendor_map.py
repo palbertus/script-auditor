@@ -98,6 +98,13 @@ VENDOR_PATTERNS = [
     ("js-agent.newrelic.com",                   "New Relic"),
     ("bam.nr-data.net",                         "New Relic"),
 
+    # --- PostHog ---
+    ("cdn.posthog.com",                         "PostHog"),
+    ("us.i.posthog.com",                        "PostHog"),
+    ("eu.i.posthog.com",                        "PostHog"),
+    ("app.posthog.com",                         "PostHog"),
+    ("posthog.com",                             "PostHog"),
+
     # --- Crisp ---
     ("client.crisp.chat",                       "Crisp"),
 
@@ -149,6 +156,7 @@ _INLINE_FINGERPRINTS = [
     ("clarity(",                "Microsoft Clarity"),
     ("lintrk(",                 "LinkedIn Insight Tag"),
     ("twq(",                    "Twitter/X Ads Pixel"),
+    ("posthog.init(",           "PostHog"),
     ("ttq.load(",               "TikTok Pixel"),
     ("pintrk(",                 "Pinterest Tag"),
     ("dataLayer",               "Google Tag Manager"),
