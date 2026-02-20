@@ -344,7 +344,19 @@
     .tag-external { background: rgba(61,214,140,0.1); color: var(--green); }
     .tag-inline   { background: rgba(245,166,35,0.1);  color: var(--orange); }
     .tag-gtm      { background: rgba(91,127,255,0.15); color: var(--accent); }
+    .tag-blocked  { background: rgba(255,92,92,0.12);  color: var(--red); border: 1px solid rgba(255,92,92,0.25); }
     .tag-no       { color: var(--muted); }
+
+    tbody tr.is-blocked { background: rgba(255,92,92,0.04); }
+    tbody tr.is-blocked:hover { background: rgba(255,92,92,0.08); }
+
+    .block-reason {
+      display: block;
+      font-size: 10px;
+      color: var(--red);
+      opacity: 0.85;
+      margin-top: 3px;
+    }
 
     .scanned-at {
       margin-top: 20px;
@@ -414,6 +426,10 @@
         <span class="stat-value" id="gtmInjectedCount">0</span>
         <span class="stat-label">Via GTM</span>
       </div>
+      <div class="stat">
+        <span class="stat-value" id="blockedCount" style="color:var(--red)">0</span>
+        <span class="stat-label">Blocked</span>
+      </div>
       <div class="stat" id="gtmStat">
         <span class="stat-label" style="margin-bottom:6px">GTM Status</span>
         <span id="gtmBadge" class="badge">—</span>
@@ -432,6 +448,7 @@
         <button class="filter-tab" onclick="setFilter('external', this)">External</button>
         <button class="filter-tab" onclick="setFilter('inline', this)">Inline</button>
         <button class="filter-tab" onclick="setFilter('gtm', this)">Via GTM</button>
+        <button class="filter-tab" onclick="setFilter('blocked', this)">Blocked</button>
       </div>
     </div>
 
@@ -443,6 +460,7 @@
             <th>Vendor</th>
             <th>Type</th>
             <th>Via GTM</th>
+            <th>Blocked</th>
             <th>URL</th>
           </tr>
         </thead>
@@ -542,11 +560,13 @@
     const external = allScripts.filter(s => s.type === 'external');
     const inline   = allScripts.filter(s => s.type === 'inline');
     const viaGtm   = allScripts.filter(s => s.via_gtm);
+    const blocked  = allScripts.filter(s => s.blocked);
 
-    document.getElementById('totalCount').textContent    = allScripts.length;
-    document.getElementById('externalCount').textContent = external.length;
-    document.getElementById('inlineCount').textContent   = inline.length;
+    document.getElementById('totalCount').textContent       = allScripts.length;
+    document.getElementById('externalCount').textContent    = external.length;
+    document.getElementById('inlineCount').textContent      = inline.length;
     document.getElementById('gtmInjectedCount').textContent = viaGtm.length;
+    document.getElementById('blockedCount').textContent     = blocked.length;
 
     const badge = document.getElementById('gtmBadge');
     if (data.gtm_detected) {
@@ -580,26 +600,41 @@
   function renderTable(scripts) {
     const tbody = document.getElementById('scriptsBody');
     if (!scripts.length) {
-      tbody.innerHTML = '<tr><td colspan="5" style="color:var(--muted);padding:20px;text-align:center">No scripts found</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="6" style="color:var(--muted);padding:20px;text-align:center">No scripts found</td></tr>';
       return;
     }
     tbody.innerHTML = scripts.map(s => {
-      const gtmClass = s.via_gtm ? ' via-gtm' : '';
-      const typeTag  = s.type === 'external'
+      const rowClass = [
+        s.via_gtm   ? 'via-gtm'    : '',
+        s.blocked   ? 'is-blocked' : '',
+      ].filter(Boolean).join(' ');
+
+      const typeTag = s.type === 'external'
         ? '<span class="tag tag-external">external</span>'
         : '<span class="tag tag-inline">inline</span>';
-      const gtmTag   = s.via_gtm
+
+      const gtmTag = s.via_gtm
         ? '<span class="tag tag-gtm">GTM</span>'
         : '<span class="tag-no">—</span>';
-      const urlCell  = s.url === 'inline'
+
+      const blockedTag = s.blocked
+        ? `<span class="tag tag-blocked" title="${esc(s.block_reason || '')}">blocked</span>`
+        : '<span class="tag-no">—</span>';
+
+      const nameCell = s.blocked && s.block_reason
+        ? `${esc(s.name)}<span class="block-reason">${esc(s.block_reason)}</span>`
+        : esc(s.name);
+
+      const urlCell = s.url === 'inline'
         ? '<span style="color:var(--muted)">inline</span>'
         : `<a href="${esc(s.url)}" target="_blank" rel="noopener" title="${esc(s.url)}">${esc(s.url)}</a>`;
 
-      return `<tr class="${gtmClass}">
-        <td>${esc(s.name)}</td>
+      return `<tr class="${rowClass}">
+        <td>${nameCell}</td>
         <td>${esc(s.vendor)}</td>
         <td>${typeTag}</td>
         <td>${gtmTag}</td>
+        <td>${blockedTag}</td>
         <td class="url-cell">${urlCell}</td>
       </tr>`;
     }).join('');
@@ -611,9 +646,10 @@
     btn.classList.add('active');
 
     let filtered;
-    if (filter === 'all')      filtered = allScripts;
-    else if (filter === 'gtm') filtered = allScripts.filter(s => s.via_gtm);
-    else                       filtered = allScripts.filter(s => s.type === filter);
+    if (filter === 'all')         filtered = allScripts;
+    else if (filter === 'gtm')    filtered = allScripts.filter(s => s.via_gtm);
+    else if (filter === 'blocked') filtered = allScripts.filter(s => s.blocked);
+    else                           filtered = allScripts.filter(s => s.type === filter);
 
     renderTable(filtered);
   }

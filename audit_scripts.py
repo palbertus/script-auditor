@@ -76,16 +76,73 @@ def is_filtered_url(url: str) -> bool:
     return any(fragment in lower for fragment in _FILTERED_URL_FRAGMENTS)
 
 
+def classify_error(raw: str) -> str:
+    """Turn a raw Playwright/network error string into a short human-readable note."""
+    s = raw.lower()
+    if "net::err_blocked_by_client" in s or "adblock" in s:
+        return "Blocked by ad blocker / browser extension"
+    if "net::err_connection_refused" in s:
+        return "Connection refused"
+    if "net::err_connection_timed_out" in s or "timeout" in s:
+        return "Connection timed out"
+    if "net::err_name_not_resolved" in s or "dns" in s:
+        return "DNS resolution failed (domain not found)"
+    if "net::err_ssl" in s or "ssl" in s or "certificate" in s:
+        return "SSL / certificate error"
+    if "net::err_aborted" in s:
+        return "Request aborted"
+    if "net::err_failed" in s:
+        return "Network request failed"
+    if "403" in s or "forbidden" in s:
+        return "403 Forbidden"
+    if "401" in s or "unauthorized" in s:
+        return "401 Unauthorized"
+    if "404" in s or "not found" in s:
+        return "404 Not Found"
+    if "cors" in s or "cross-origin" in s:
+        return "Blocked by CORS policy"
+    if "blocked" in s:
+        return "Request blocked"
+    return f"Request failed: {raw[:120]}"
+
+
+def classify_page_error(raw: str) -> str:
+    """Turn a page.goto() exception into a readable message."""
+    s = raw.lower()
+    if "timeout" in s:
+        return "Page load timed out — site may be slow or blocking automated browsers"
+    if "net::err_name_not_resolved" in s:
+        return "Domain not found — check the URL"
+    if "net::err_connection_refused" in s:
+        return "Connection refused — site may be down"
+    if "net::err_connection_timed_out" in s:
+        return "Connection timed out — site may be slow or unreachable"
+    if "net::err_ssl" in s or "certificate" in s:
+        return "SSL certificate error"
+    if "net::err_aborted" in s:
+        return "Page load aborted — site may be blocking automated access"
+    if "net::err_failed" in s:
+        return "Network request failed — site may be blocking automated browsers"
+    if "blocked" in s:
+        return "Page load blocked — site is rejecting automated browsers"
+    return raw
+
+
 def build_script_record(
-    url: str, name: str, vendor: str, via_gtm: bool, script_type: str
+    url: str, name: str, vendor: str, via_gtm: bool, script_type: str,
+    blocked: bool = False, block_reason: str = None
 ) -> dict:
-    return {
+    record = {
         "url": url,
         "name": name,
         "vendor": vendor,
         "via_gtm": via_gtm,
         "type": script_type,
+        "blocked": blocked,
     }
+    if block_reason:
+        record["block_reason"] = block_reason
+    return record
 
 
 # ---------------------------------------------------------------------------
@@ -140,6 +197,7 @@ def audit_url(url: str, browser: Browser, timeout_ms: int) -> dict:
     page = context.new_page()
 
     captured_requests: list = []
+    failed_requests: dict = {}  # url -> block_reason string
     gtm_detected = False
 
     def handle_request(request):
@@ -152,7 +210,29 @@ def audit_url(url: str, browser: Browser, timeout_ms: int) -> dict:
             if is_gtm_request(req_url):
                 gtm_detected = True
 
+    def handle_request_failed(request):
+        if request.resource_type == "script":
+            req_url = request.url
+            if is_filtered_url(req_url):
+                return
+            reason = classify_error(request.failure or "")
+            failed_requests[req_url] = reason
+            # Still track it so it appears in results
+            if req_url not in captured_requests:
+                captured_requests.append(req_url)
+
+    def handle_response(response):
+        if response.request.resource_type == "script":
+            status = response.status
+            if status in (401, 403, 404, 429) or status >= 500:
+                req_url = response.url
+                if not is_filtered_url(req_url):
+                    reason = classify_error(str(status))
+                    failed_requests[req_url] = reason
+
     page.on("request", handle_request)
+    page.on("requestfailed", handle_request_failed)
+    page.on("response", handle_response)
 
     try:
         page.goto(url, wait_until="networkidle", timeout=timeout_ms)
@@ -162,7 +242,7 @@ def audit_url(url: str, browser: Browser, timeout_ms: int) -> dict:
             "url": url,
             "scanned_at": _now_iso(),
             "gtm_detected": False,
-            "error": str(e),
+            "error": classify_page_error(str(e)),
             "scripts": [],
         }
 
@@ -183,8 +263,11 @@ def audit_url(url: str, browser: Browser, timeout_ms: int) -> dict:
     for script_url in dom_script_urls:
         name = infer_name(script_url)
         vendor = lookup_vendor(script_url)
+        blocked = script_url in failed_requests
         dom_external_records.append(
-            build_script_record(script_url, name, vendor, False, "external")
+            build_script_record(script_url, name, vendor, False, "external",
+                                blocked=blocked,
+                                block_reason=failed_requests.get(script_url))
         )
 
     # Dynamic scripts = network-captured but not in the DOM snapshot
@@ -193,8 +276,11 @@ def audit_url(url: str, browser: Browser, timeout_ms: int) -> dict:
         if script_url not in dom_script_urls:
             name = infer_name(script_url)
             vendor = lookup_vendor(script_url)
+            blocked = script_url in failed_requests
             dynamic_records.append(
-                build_script_record(script_url, name, vendor, gtm_detected, "external")
+                build_script_record(script_url, name, vendor, gtm_detected, "external",
+                                    blocked=blocked,
+                                    block_reason=failed_requests.get(script_url))
             )
 
     context.close()
